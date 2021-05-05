@@ -22,11 +22,11 @@ package resolver
 import (
 	"crypto/sha256"
 	"encoding/base64"
-	"fmt"
 	"strconv"
 
 	"github.com/bitmaelum/bitmaelum-suite/internal/organisation"
 	"github.com/bitmaelum/bitmaelum-suite/internal/vault"
+	"github.com/bitmaelum/bitmaelum-suite/pkg/address"
 	"github.com/bitmaelum/bitmaelum-suite/pkg/bmcrypto"
 	"github.com/bitmaelum/bitmaelum-suite/pkg/hash"
 	lru "github.com/hashicorp/golang-lru"
@@ -45,6 +45,7 @@ type AddressInfo struct {
 	Hash        string          `json:"hash"`       // Hash of the email address
 	PublicKey   bmcrypto.PubKey `json:"public_key"` // PublicKey of the user
 	RoutingID   string          `json:"routing"`    // Routing ID
+	RedirHash   string          `json:"redir_hash"` // Routing ID
 	Pow         string          `json:"pow"`        // Proof of work
 	RoutingInfo RoutingInfo     `json:"_"`          // Don't store
 }
@@ -152,7 +153,7 @@ func (s *Service) ResolveRouting(routingID string) (*RoutingInfo, error) {
 	return info, nil
 }
 
-// ResolveOrganisation resolves a route.
+// ResolveOrganisation resolves an organisation object.
 func (s *Service) ResolveOrganisation(orgHash hash.Hash) (*OrganisationInfo, error) {
 	logrus.Debugf("Resolving %s", orgHash)
 	info, err := s.repo.ResolveOrganisation(orgHash)
@@ -164,25 +165,8 @@ func (s *Service) ResolveOrganisation(orgHash hash.Hash) (*OrganisationInfo, err
 }
 
 // UploadAddressInfo uploads resolve information to one (or more) resolvers
-func (s *Service) UploadAddressInfo(info vault.AccountInfo, orgToken string) error {
-	// Read current key, so we can find the correct privkey for authentication
-	privKey := info.GetActiveKey().PrivKey
-	currentInfo, err := s.repo.ResolveAddress(info.Address.Hash())
-	if err == nil {
-		kp, err := info.FindKey(currentInfo.PublicKey.Fingerprint())
-		if err != nil {
-			return err
-		}
-		fmt.Println("found authorizing key: ", kp.FingerPrint)
-		privKey = kp.PrivKey
-	}
-
-	return s.repo.UploadAddress(*info.Address, &AddressInfo{
-		Hash:      info.Address.Hash().String(),
-		PublicKey: info.GetActiveKey().PubKey,
-		RoutingID: info.RoutingID,
-		Pow:       info.Pow.String(),
-	}, privKey, *info.Pow, orgToken)
+func (s *Service) UploadAddressInfo(addr address.Address, addrObj AddressInfo, privkey *bmcrypto.PrivKey) error {
+	return s.repo.UploadAddress(addr, &addrObj, *privkey)
 }
 
 // UploadRoutingInfo uploads resolve information to one (or more) resolvers

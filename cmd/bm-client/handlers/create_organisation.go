@@ -25,6 +25,7 @@ import (
 	"net"
 	"os"
 
+	"github.com/bitmaelum/bitmaelum-suite/cmd/bm-client/internal"
 	"github.com/bitmaelum/bitmaelum-suite/cmd/bm-client/internal/container"
 	"github.com/bitmaelum/bitmaelum-suite/cmd/bm-client/internal/stepper"
 	bminternal "github.com/bitmaelum/bitmaelum-suite/internal"
@@ -35,33 +36,42 @@ import (
 	pow "github.com/bitmaelum/bitmaelum-suite/pkg/proofofwork"
 )
 
-const (
-	ctxOrganisationFound ctxKey = iota
-	ctxOrgVault
-	ctxOrgAddr
-	ctxOrgHash
-	ctxOrgValidations
-	ctxOrgValidationsStr
-	ctxOrgKeyType
-	ctxOrgKeyPair
-	ctxOrgName
-	ctxOrgInfo
-	ctxOrgProof
-	ctxOrgDomains
-	ctxOrgReserved
-)
+type orgArgs struct {
+	Vault       *vault.Vault     // Vault
+	OrgAddrStr  string           // Textual representation of the address
+	OrgAddrHash hash.Hash        // Hash representation of the address
+	Name        string           // Name of the account
+	TokenStr    string           // Additional token for mail server
+	KeyType     bmcrypto.KeyType // Type of key to generate
+	Validations []string         // textual representation of validations
+}
+
+type orgSpinnerContext struct {
+	Args            orgArgs                       // Incoming arguments
+	Reserved        bool                          // True if this address is a reserved address
+	ReservedDomains []string                      // domains for reserved validation (if any)
+	Organisation    *vault.OrganisationInfo       // Organisation info
+	KeyPair         *bmcrypto.KeyPair             // Generated key pair (if generated)
+	Validations     []organisation.ValidationType // Validations
+	Proof           *pow.ProofOfWork              // proof-of-work (if generated)
+}
 
 // CreateOrganisation creates a new organisation locally in the vault and pushes the public key to the resolver
 func CreateOrganisation(v *vault.Vault, orgAddr, fullName string, orgValidations []string, kt bmcrypto.KeyType) {
 	s := stepper.New()
 
-	// Set some initial values in the context. We read and write to the context to deal with variables instead of using globals.
-	s.Ctx = context.WithValue(s.Ctx, ctxOrgVault, v)
-	s.Ctx = context.WithValue(s.Ctx, ctxOrgKeyType, kt)
-	s.Ctx = context.WithValue(s.Ctx, ctxOrgName, fullName)
-	s.Ctx = context.WithValue(s.Ctx, ctxOrgValidationsStr, orgValidations)
-	s.Ctx = context.WithValue(s.Ctx, ctxOrgAddr, orgAddr)
-	s.Ctx = context.WithValue(s.Ctx, ctxOrgHash, hash.New(orgAddr))
+	// Setup context for spinner
+	spinnerCtx := orgSpinnerContext{
+		Args: orgArgs{
+			Vault:       v,
+			KeyType:     kt,
+			Name:        fullName,
+			Validations: orgValidations,
+			OrgAddrStr:  orgAddr,
+			OrgAddrHash: hash.New(orgAddr),
+		},
+	}
+	s.Ctx = context.WithValue(s.Ctx, internal.CtxSpinnerContext, spinnerCtx)
 
 	// Add all the steps from the account creation procedure
 
@@ -89,27 +99,27 @@ func CreateOrganisation(v *vault.Vault, orgAddr, fullName string, orgValidations
 	s.AddStep(stepper.Step{
 		Title:          "Generating organisation public/private keypair",
 		DisplaySpinner: true,
-		OnlyIfFunc:     organisationNotFoundInContext,
+		SkipIfFunc:     func(s stepper.Stepper) bool { return getOrganisationContext(s).Organisation == nil },
 		RunFunc:        generateOrganisationKeyPair,
 	})
 
 	s.AddStep(stepper.Step{
 		Title:          fmt.Sprintf("Doing some work to let people know this is not a fake account, %sthis might take a while%s...", stepper.AnsiFgYellow, stepper.AnsiReset),
 		DisplaySpinner: true,
-		OnlyIfFunc:     organisationNotFoundInContext,
+		SkipIfFunc:     func(s stepper.Stepper) bool { return getOrganisationContext(s).Organisation == nil },
 		RunFunc:        doProofOfWorkOrg,
 	})
 
 	s.AddStep(stepper.Step{
 		Title:      "Placing your new organisation into the vault",
-		OnlyIfFunc: organisationNotFoundInContext,
+		SkipIfFunc: func(s stepper.Stepper) bool { return getOrganisationContext(s).Organisation == nil },
 		RunFunc:    addOrganisationToVault,
 	})
 
 	s.AddStep(stepper.Step{
 		Title:          "Checking domains for reservation proof",
 		RunFunc:        checkOrganisationReservedDomains,
-		OnlyIfFunc:     func(s stepper.Stepper) bool { return s.Ctx.Value(ctxOrgReserved) == false },
+		SkipIfFunc:     func(s stepper.Stepper) bool { return !getOrganisationContext(s).Reserved },
 		DisplaySpinner: true,
 	})
 
@@ -126,93 +136,59 @@ func CreateOrganisation(v *vault.Vault, orgAddr, fullName string, orgValidations
 		os.Exit(1)
 	}
 
-	fmt.Print(`
-*****************************************************************************
-!IMPORTANT!IMPORTANT!IMPORTANT!IMPORTANT!IMPORTANT!IMPORTANT!IMPORTANT!IMPORT
-*****************************************************************************
+	kp := getOrganisationContext(*s).Organisation.GetActiveKey().KeyPair
+	mnemonic := bminternal.WordWrap(bmcrypto.GetMnemonic(&kp), 78)
 
-We have generated a private key which allows you to control the organisation. 
-If, for any reason, you lose this key, you will need to use the following 
-words in order to recreate the key:
-
-`)
-	info := s.Ctx.Value(ctxOrgInfo).(*vault.OrganisationInfo)
-	kp := info.GetActiveKey().KeyPair
-	fmt.Print(bminternal.WordWrap(bmcrypto.GetMnemonic(&kp), 78))
-	fmt.Print(`
-
-Write these words down and store them in a secure environment. They are the 
-ONLY way to recover your private key in case you lose it.
-
-WITHOUT THESE WORDS, ALL ACCESS TO YOUR ORGANISATION IS LOST!
-`)
+	fmt.Println(internal.GenerateFromMnemonicTemplate(internal.OrganisationCreatedTemplate, mnemonic))
 }
 
 func checkOrganisationInVault(s *stepper.Stepper) stepper.StepResult {
-	v := s.Ctx.Value(ctxOrgVault).(*vault.Vault)
-	orgHash := s.Ctx.Value(ctxOrgHash).(hash.Hash)
+	v := getOrganisationContext(*s).Args.Vault
+	orgHash := getOrganisationContext(*s).Args.OrgAddrHash
 
 	if !v.HasOrganisation(orgHash) {
-		return stepper.StepResult{
-			Status:  stepper.SUCCESS,
-			Message: "not found. That's good.",
-		}
+		return s.Success("not found. That's good.")
 	}
 
 	info, err := v.GetOrganisationInfo(orgHash)
 	if err != nil {
-		return stepper.StepResult{
-			Status:  stepper.FAILURE,
-			Message: "found. But error while fetching from the vault.",
-		}
+		return s.Failure("found. But error while fetching from the vault.")
 	}
 
-	s.Ctx = context.WithValue(s.Ctx, ctxOrgInfo, info)
-	s.Ctx = context.WithValue(s.Ctx, ctxOrganisationFound, true)
+	sc := getOrganisationContext(*s)
+	sc.Organisation = info
 
-	return stepper.StepResult{
-		Status:  stepper.SUCCESS,
-		Message: "found. That's odd, but let's continue...",
-	}
+	return s.Success("found. That's odd, but let's continue...")
 }
 
 func checkOrganisationInResolver(s *stepper.Stepper) stepper.StepResult {
-	orgHash := s.Ctx.Value(ctxOrgHash).(hash.Hash)
+	orgHash := getOrganisationContext(*s).Args.OrgAddrHash
 
 	ks := container.Instance.GetResolveService()
 	_, err := ks.ResolveOrganisation(orgHash)
 
 	if err == nil {
-		return stepper.StepResult{
-			Status:  stepper.FAILURE,
-			Message: "organisation already found",
-		}
+		return s.Failure("organisation already found")
 	}
 
-	return stepper.StepResult{
-		Status: stepper.SUCCESS,
-	}
+	return s.Success("")
 }
 
 func checkValidations(s *stepper.Stepper) stepper.StepResult {
-	arr := s.Ctx.Value(ctxOrgValidationsStr).([]string)
+	arr := getOrganisationContext(*s).Args.Validations
 	validations, err := organisation.NewValidationTypeFromStringArray(arr)
 	if err != nil {
-		return stepper.StepResult{
-			Status:  stepper.FAILURE,
-			Message: "validation failed",
-		}
+		return s.Failure("validation failed")
 	}
 
-	s.Ctx = context.WithValue(s.Ctx, ctxOrgValidations, validations)
+	sc := getOrganisationContext(*s)
+	sc.Validations = validations
 
-	return stepper.StepResult{
-		Status: stepper.SUCCESS,
-	}
+	return s.Success("")
 }
 
 func doProofOfWorkOrg(s *stepper.Stepper) stepper.StepResult {
-	orgHash := s.Ctx.Value(ctxOrgHash).(hash.Hash)
+	orgHash := getOrganisationContext(*s).Args.OrgAddrHash
 
 	// Find the number of bits for address creation
 	res := container.Instance.GetResolveService()
@@ -221,125 +197,91 @@ func doProofOfWorkOrg(s *stepper.Stepper) stepper.StepResult {
 	proof := pow.NewWithoutProof(resolverCfg.ProofOfWork.Organisation, orgHash.String())
 	proof.WorkMulticore()
 
-	s.Ctx = context.WithValue(s.Ctx, ctxOrgProof, proof)
+	sc := getOrganisationContext(*s)
+	sc.Proof = proof
 
-	return stepper.StepResult{
-		Status: stepper.SUCCESS,
-	}
+	return s.Success("")
 }
 
 func generateOrganisationKeyPair(s *stepper.Stepper) stepper.StepResult {
-	kt := s.Ctx.Value(ctxOrgKeyType).(bmcrypto.KeyType)
+	kt := getOrganisationContext(*s).Args.KeyType
 	kp, err := bmcrypto.GenerateKeypairWithRandomSeed(kt)
 	if err != nil {
-		return stepper.StepResult{
-			Status:  stepper.FAILURE,
-			Message: err.Error(),
-		}
+		return s.Failure(err.Error())
 	}
 
-	s.Ctx = context.WithValue(s.Ctx, ctxOrgKeyPair, kp)
-	return stepper.StepResult{
-		Status: stepper.SUCCESS,
-	}
+	sc := getOrganisationContext(*s)
+	sc.KeyPair = kp
+
+	return s.Success("")
 }
 
 func addOrganisationToVault(s *stepper.Stepper) stepper.StepResult {
-	v := s.Ctx.Value(ctxOrgVault).(*vault.Vault)
-	orgAddr := s.Ctx.Value(ctxOrgAddr).(string)
-	name := s.Ctx.Value(ctxOrgName).(string)
-	kp := s.Ctx.Value(ctxOrgKeyPair).(*bmcrypto.KeyPair)
-	proof := s.Ctx.Value(ctxOrgProof).(*pow.ProofOfWork)
-	validations := s.Ctx.Value(ctxOrgValidations).([]organisation.ValidationType)
+	sc := getOrganisationContext(*s)
 
 	info := &vault.OrganisationInfo{
-		Addr:     orgAddr,
-		FullName: name,
+		Addr:     sc.Args.OrgAddrStr,
+		FullName: sc.Args.Name,
 		Keys: []vault.KeyPair{
 			{
-				KeyPair: *kp,
+				KeyPair: *sc.KeyPair,
 				Active:  true,
 			},
 		},
-		Pow:         proof,
-		Validations: validations,
+		Pow:         sc.Proof,
+		Validations: sc.Validations,
 	}
 
-	v.AddOrganisation(*info)
-	err := v.Persist()
+	sc.Args.Vault.AddOrganisation(*info)
+	err := sc.Args.Vault.Persist()
 	if err != nil {
-		return stepper.StepResult{
-			Status:  stepper.FAILURE,
-			Message: fmt.Sprintf("error while saving organisation into vault: %#v", err),
-		}
+		return s.Failure(fmt.Sprintf("error while saving organisation into vault: %#v", err))
 	}
 
-	s.Ctx = context.WithValue(s.Ctx, ctxOrgInfo, info)
-	s.Ctx = context.WithValue(s.Ctx, ctxOrganisationFound, true)
+	sc.Organisation = info
 
-	return stepper.StepResult{
-		Status: stepper.SUCCESS,
-	}
+	return s.Success("")
 }
 
 func uploadOrganisationToResolver(s *stepper.Stepper) stepper.StepResult {
-	info := s.Ctx.Value(ctxOrgInfo).(*vault.OrganisationInfo)
+	info := getOrganisationContext(*s).Organisation
 
 	ks := container.Instance.GetResolveService()
 	err := ks.UploadOrganisationInfo(*info)
 	if err != nil {
-		return stepper.StepResult{
-			Status:  stepper.FAILURE,
-			Message: fmt.Sprintf("error while uploading organisation to the resolver: %s", err.Error()),
-		}
+		return s.Failure(fmt.Sprintf("error while uploading organisation to the resolver: %s", err.Error()))
 	}
 
-	return stepper.StepResult{
-		Status: stepper.SUCCESS,
-	}
-}
-
-func organisationNotFoundInContext(s stepper.Stepper) bool {
-	return s.Ctx.Value(ctxOrganisationFound) != nil
+	return s.Success("")
 }
 
 func checkOrganisationReservedAddress(s *stepper.Stepper) stepper.StepResult {
-	orgAddr := s.Ctx.Value(ctxOrgAddr).(string)
-	orgHash := hash.New(orgAddr)
+	orgHash := getOrganisationContext(*s).Args.OrgAddrHash
 
 	ks := container.Instance.GetResolveService()
 	domains, _ := ks.CheckReserved(orgHash)
 
-	s.Ctx = context.WithValue(s.Ctx, ctxOrgReserved, len(domains) > 0)
-	s.Ctx = context.WithValue(s.Ctx, ctxOrgDomains, domains)
+	sc := getOrganisationContext(*s)
+	sc.Reserved = len(domains) > 0
+	sc.ReservedDomains = domains
 
 	if len(domains) > 0 {
-		return stepper.StepResult{
-			Status:  stepper.NOTICE,
-			Message: "Yes. DNS verification is needed in order to register this organisation",
-		}
+		return s.Notice("Yes. DNS verification is needed in order to register this organisation")
 	}
 
-	return stepper.StepResult{
-		Status:  stepper.SUCCESS,
-		Message: "Not reserved",
-	}
+	return s.Success("not reserved")
 }
 
 func checkOrganisationReservedDomains(s *stepper.Stepper) stepper.StepResult {
-	var kp *bmcrypto.KeyPair
 
-	af := s.Ctx.Value(ctxOrganisationFound) != nil
-	if af {
-		info := s.Ctx.Value(ctxOrgInfo).(*vault.OrganisationInfo)
+	kp := getOrganisationContext(*s).KeyPair
+	if kp == nil {
+		info := getOrganisationContext(*s).Organisation
 		k := info.GetActiveKey().KeyPair
 		kp = &k
-	} else {
-		kp = s.Ctx.Value(ctxOrgKeyPair).(*bmcrypto.KeyPair)
 	}
 
-	domains := s.Ctx.Value(ctxOrgDomains).([]string)
-
+	domains := getOrganisationContext(*s).ReservedDomains
 	for _, domain := range domains {
 		// Check domain
 		entries, err := net.LookupTXT("_bitmaelum." + domain)
@@ -349,28 +291,16 @@ func checkOrganisationReservedDomains(s *stepper.Stepper) stepper.StepResult {
 
 		for _, entry := range entries {
 			if entry == kp.PubKey.Fingerprint() {
-				return stepper.StepResult{
-					Status:  stepper.SUCCESS,
-					Message: "found reservation at " + domain,
-				}
+				return s.Success("found reservation at " + domain)
 			}
 		}
 	}
 
-	messageTemplate := `could not find proof in the DNS.
+	msg := internal.GenerateFromFingerprintTemplate(internal.OrganisationProofTemplate, kp.PubKey.Fingerprint(), domains)
+	return s.Failure(msg)
+}
 
-In order to register this reserved organisation, make sure you add the following information to the DNS:
-
-    _bitmaelum TXT {{ .Fingerprint }}
-
-This entry could be added to any of the following domains: {{ .Domains }}. Once we have found the entry, we can 
-register the organisation onto the keyserver. For more information, please visit https://bitmaelum.com/reserved
-`
-
-	msg := generateFromTemplate(messageTemplate, kp.PubKey.Fingerprint(), domains)
-
-	return stepper.StepResult{
-		Status:  stepper.FAILURE,
-		Message: msg,
-	}
+// getOrganisationContext returns the spinner context structure with all information that is communicated between spinner steps
+func getOrganisationContext(s stepper.Stepper) *orgSpinnerContext {
+	return s.Ctx.Value(internal.CtxSpinnerContext).(*orgSpinnerContext)
 }

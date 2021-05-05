@@ -157,7 +157,7 @@ func (r *remoteRepo) resolve(url string, v interface{}) error {
 	return ErrKeyNotFound
 }
 
-func (r *remoteRepo) UploadAddress(addr address.Address, info *AddressInfo, privKey bmcrypto.PrivKey, proof proofofwork.ProofOfWork, orgToken string) error {
+func (r *remoteRepo) UploadAddress(addr address.Address, info *AddressInfo, privKey bmcrypto.PrivKey) error {
 	// Fetch the current serial number (if record is present)
 	var serial uint64
 	kd, err := r.fetchAddress(addr.Hash())
@@ -168,10 +168,10 @@ func (r *remoteRepo) UploadAddress(addr address.Address, info *AddressInfo, priv
 	data := &map[string]string{
 		"user_hash":  addr.LocalHash().String(),
 		"org_hash":   addr.OrgHash().String(),
-		"org_token":  orgToken,
 		"public_key": info.PublicKey.String(),
 		"routing_id": info.RoutingID,
-		"proof":      proof.String(),
+		"proof":      info.Pow,
+		"redir_hash": info.RedirHash,
 	}
 
 	url := r.BaseURL + "/address/" + info.Hash

@@ -49,8 +49,8 @@ type AccountInfoV1 struct {
 
 // AccountInfo represents client account information
 type AccountInfo struct {
-	// Default bool             `json:"default"` // Is this the default account
-	Address *address.Address `json:"address"` // The address of the account
+	Address      *address.Address `json:"address"`                 // The address of the account
+	RedirAddress *address.Address `json:"redir_address,omitempty"` // Optional address in case this address is a symlink
 
 	Name     string            `json:"name"`     // Full name of the user
 	Settings map[string]string `json:"settings"` // Additional settings that can be user-defined

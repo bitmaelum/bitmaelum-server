@@ -55,7 +55,7 @@ type ConfigRepository interface {
 // AddressRepository is the interface to manage address resolving
 type AddressRepository interface {
 	ResolveAddress(addrHash hash.Hash) (*AddressInfo, error)
-	UploadAddress(addr address.Address, info *AddressInfo, privKey bmcrypto.PrivKey, pow proofofwork.ProofOfWork, orgToken string) error
+	UploadAddress(addr address.Address, info *AddressInfo, privKey bmcrypto.PrivKey) error
 	DeleteAddress(info *AddressInfo, privKey bmcrypto.PrivKey) error
 	UndeleteAddress(info *AddressInfo, privKey bmcrypto.PrivKey) error
 

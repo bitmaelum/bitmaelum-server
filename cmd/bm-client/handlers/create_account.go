@@ -20,18 +20,17 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net"
 	"os"
-	"text/template"
 
 	"github.com/bitmaelum/bitmaelum-suite/cmd/bm-client/internal"
 	"github.com/bitmaelum/bitmaelum-suite/cmd/bm-client/internal/container"
 	"github.com/bitmaelum/bitmaelum-suite/cmd/bm-client/internal/stepper"
 	bminternal "github.com/bitmaelum/bitmaelum-suite/internal"
 	"github.com/bitmaelum/bitmaelum-suite/internal/api"
+	"github.com/bitmaelum/bitmaelum-suite/internal/resolver"
 	"github.com/bitmaelum/bitmaelum-suite/internal/signature"
 	"github.com/bitmaelum/bitmaelum-suite/internal/vault"
 	"github.com/bitmaelum/bitmaelum-suite/pkg/address"
@@ -39,34 +38,44 @@ import (
 	pow "github.com/bitmaelum/bitmaelum-suite/pkg/proofofwork"
 )
 
-type ctxKey int
+type args struct {
+	Vault        *vault.Vault     // Vault
+	AddrStr      string           // Textual representation of the address
+	Name         string           // Name of the account
+	TokenStr     string           // Additional token for mail server
+	KeyType      bmcrypto.KeyType // Type of key to generate
+	RedirAddrStr string           // Textual representation of the redirect address
+}
 
-const (
-	ctxAddr ctxKey = iota
-	ctxAddrStr
-	ctxVault
-	ctxName
-	ctxTokenStr
-	ctxKeyType
-	ctxInfo
-	ctxAccountFound
-	ctxProof
-	ctxToken
-	ctxKeyPair
-	ctxDomains
-	ctxReserved
-)
+type spinnerContext struct {
+	Args            args                 // Incoming arguments
+	Addr            *address.Address     // Address to create
+	AccountInfo     *vault.AccountInfo   // Account info found in the vault
+	Proof           *pow.ProofOfWork     // Generated Proof of work
+	KeyPair         *bmcrypto.KeyPair    // Generated Keypair
+	Reserved        bool                 // True if this address is a reserved address
+	ReservedDomains []string             // domains for reserved validation (if any)
+	RedirAddr       *address.Address     // Address to redirect to
+	Token           *signature.Token     // Information from given token
+	AddrObj         resolver.AddressInfo // Address info to send to resolver
+}
 
 // CreateAccount creates a new account locally in the vault, stores it on the mail server and pushes the public key to the resolver
-func CreateAccount(v *vault.Vault, addrStr, name, tokenStr string, kt bmcrypto.KeyType) {
+func CreateAccount(v *vault.Vault, addrStr, name, tokenStr string, kt bmcrypto.KeyType, redirStr string) {
 	s := stepper.New()
 
-	// Set some initial values in the context. We read and write to the context to deal with variables instead of using globals.
-	s.Ctx = context.WithValue(s.Ctx, ctxVault, v)
-	s.Ctx = context.WithValue(s.Ctx, ctxAddrStr, addrStr)
-	s.Ctx = context.WithValue(s.Ctx, ctxName, name)
-	s.Ctx = context.WithValue(s.Ctx, ctxTokenStr, tokenStr)
-	s.Ctx = context.WithValue(s.Ctx, ctxKeyType, kt)
+	// Setup context for spinner
+	spinnerCtx := spinnerContext{
+		Args: args{
+			Vault:        v,
+			AddrStr:      addrStr,
+			Name:         name,
+			TokenStr:     tokenStr,
+			KeyType:      kt,
+			RedirAddrStr: redirStr,
+		},
+	}
+	s.Ctx = context.WithValue(s.Ctx, internal.CtxSpinnerContext, &spinnerCtx)
 
 	// Add all the steps from the account creation procedure
 
@@ -86,8 +95,15 @@ func CreateAccount(v *vault.Vault, addrStr, name, tokenStr string, kt bmcrypto.K
 	})
 
 	s.AddStep(stepper.Step{
-		Title:   "Checking if token is valid and extracting data",
-		RunFunc: checkToken,
+		Title:      "Checking if linked account exists",
+		SkipIfFunc: func(s stepper.Stepper) bool { return getAccountContext(s).Args.RedirAddrStr == "" },
+		RunFunc:    checkLinkedAddressInResolver,
+	})
+
+	s.AddStep(stepper.Step{
+		Title:      "Checking if token is valid and extracting data",
+		SkipIfFunc: func(s stepper.Stepper) bool { return getAccountContext(s).Args.TokenStr == "" },
+		RunFunc:    checkToken,
 	})
 
 	s.AddStep(stepper.Step{
@@ -98,33 +114,34 @@ func CreateAccount(v *vault.Vault, addrStr, name, tokenStr string, kt bmcrypto.K
 	s.AddStep(stepper.Step{
 		Title:          "Generating your initial keypair",
 		DisplaySpinner: true,
-		OnlyIfFunc:     accountNotFoundInContext,
+		SkipIfFunc:     func(s stepper.Stepper) bool { return getAccountContext(s).AccountInfo != nil },
 		RunFunc:        generateKeyPair,
 	})
 
 	s.AddStep(stepper.Step{
 		Title:          fmt.Sprintf("Doing some work to let people know this is not a fake account, %sthis might take a while%s...", stepper.AnsiFgYellow, stepper.AnsiReset),
 		DisplaySpinner: true,
-		OnlyIfFunc:     accountNotFoundInContext,
+		SkipIfFunc:     func(s stepper.Stepper) bool { return getAccountContext(s).AccountInfo != nil },
 		RunFunc:        doProofOfWork,
 	})
 
 	s.AddStep(stepper.Step{
 		Title:      "Placing your new account into the vault",
-		OnlyIfFunc: accountNotFoundInContext,
+		SkipIfFunc: func(s stepper.Stepper) bool { return getAccountContext(s).AccountInfo != nil },
 		RunFunc:    addAccountToVault,
 	})
 
 	s.AddStep(stepper.Step{
 		Title:          "Checking domains for reservation proof",
 		RunFunc:        checkReservedDomains,
-		OnlyIfFunc:     func(s stepper.Stepper) bool { return s.Ctx.Value(ctxReserved) == false },
+		SkipIfFunc:     func(s stepper.Stepper) bool { return !getAccountContext(s).Reserved },
 		DisplaySpinner: true,
 	})
 
 	s.AddStep(stepper.Step{
 		Title:          "Sending your account to the server",
 		DisplaySpinner: true,
+		SkipIfFunc:     func(s stepper.Stepper) bool { return getAccountContext(s).Args.TokenStr == "" },
 		RunFunc:        uploadAccountToServer,
 	})
 
@@ -141,81 +158,57 @@ func CreateAccount(v *vault.Vault, addrStr, name, tokenStr string, kt bmcrypto.K
 		os.Exit(1)
 	}
 
-	fmt.Print(`
-*****************************************************************************
-!IMPORTANT!IMPORTANT!IMPORTANT!IMPORTANT!IMPORTANT!IMPORTANT!IMPORTANT!IMPORT
-*****************************************************************************
+	kp := getAccountContext(*s).KeyPair
+	mnemonic := bminternal.WordWrap(bmcrypto.GetMnemonic(kp), 78)
 
-We have generated a private key which allows you to control your account. 
-If, for any reason, you lose this key, you will need to use the following 
-words in order to recreate the key:
-	
-`)
-	info := s.Ctx.Value(ctxInfo).(*vault.AccountInfo)
-	kp := info.GetActiveKey().KeyPair
-	fmt.Print(bminternal.WordWrap(bmcrypto.GetMnemonic(&kp), 78))
-	fmt.Print(`
-	
-Write these words down and store them in a secure environment. They are the 
-ONLY way to recover your private key in case you lose it.
-	
-WITHOUT THESE WORDS, ALL ACCESS TO YOUR ACCOUNT IS LOST!
-	`)
+	fmt.Println(internal.GenerateFromMnemonicTemplate(internal.AccountCreatedTemplate, mnemonic))
 }
 
 func verifyAddress(s *stepper.Stepper) stepper.StepResult {
-	addrStr := s.Ctx.Value(ctxAddrStr).(string)
+	sc := getAccountContext(*s)
 
-	addr, err := address.NewAddress(addrStr)
+	addr, err := address.NewAddress(sc.Args.AddrStr)
 	if err != nil {
-		return stepper.StepResult{
-			Status:  stepper.FAILURE,
-			Message: "it seems that this is not a valid address",
-		}
+		return s.Failure("it seems that this is not a valid address")
 	}
 
-	s.Ctx = context.WithValue(s.Ctx, ctxAddr, addr)
+	sc.Addr = addr
+	sc.AddrObj.Hash = addr.Hash().String()
 
-	return stepper.StepResult{
-		Status: stepper.SUCCESS,
-	}
+	return s.Success("")
 }
 
 func checkReservedAddress(s *stepper.Stepper) stepper.StepResult {
-	addr := s.Ctx.Value(ctxAddr).(*address.Address)
+	addr := getAccountContext(*s).Addr
+	if addr == nil {
+		return s.Failure("Could not find address")
+	}
 
 	ks := container.Instance.GetResolveService()
 	domains, _ := ks.CheckReserved(addr.Hash())
 
-	s.Ctx = context.WithValue(s.Ctx, ctxReserved, len(domains) > 0)
-	s.Ctx = context.WithValue(s.Ctx, ctxDomains, domains)
+	getAccountContext(*s).Reserved = len(domains) > 0
+	getAccountContext(*s).ReservedDomains = domains
 
 	if len(domains) > 0 {
-		return stepper.StepResult{
-			Status:  stepper.NOTICE,
-			Message: "Yes. DNS verification is needed in order to register this name",
-		}
+		return s.Notice("Yes. DNS verification is needed in order to register this name")
 	}
 
-	return stepper.StepResult{
-		Status:  stepper.SUCCESS,
-		Message: "Not reserved",
-	}
+	return s.Success("Not reserved")
 }
 
 func checkReservedDomains(s *stepper.Stepper) stepper.StepResult {
 	var kp *bmcrypto.KeyPair
 
-	af := s.Ctx.Value(ctxAccountFound) != nil
-	if af {
-		info := s.Ctx.Value(ctxInfo).(*vault.AccountInfo)
+	info := getAccountContext(*s).AccountInfo
+	if info != nil {
 		k := info.GetActiveKey().KeyPair
 		kp = &k
 	} else {
-		kp = s.Ctx.Value(ctxKeyPair).(*bmcrypto.KeyPair)
+		kp = getAccountContext(*s).KeyPair
 	}
 
-	domains := s.Ctx.Value(ctxDomains).([]string)
+	domains := getAccountContext(*s).ReservedDomains
 
 	for _, domain := range domains {
 		// Check domain
@@ -225,151 +218,118 @@ func checkReservedDomains(s *stepper.Stepper) stepper.StepResult {
 		}
 
 		for _, entry := range entries {
-			fmt.Println(" --> " + entry)
 			if entry == kp.PubKey.Fingerprint() {
-				return stepper.StepResult{
-					Status:  stepper.SUCCESS,
-					Message: "found reservation at " + domain,
-				}
+				return s.Success("found reservation at " + domain)
 			}
 		}
 	}
 
-	messageTemplate := `could not find proof in the DNS.
-
-In order to register this reserved address, make sure you add the following information to the DNS:
-
-    _bitmaelum TXT {{ .Fingerprint }}
-
-This entry could be added to any of the following domains: {{ .Domains }}. Once we have found the entry, we can 
-register the account onto the keyserver. For more information, please visit https://bitmaelum.com/reserved
-`
-
-	msg := generateFromTemplate(messageTemplate, kp.PubKey.Fingerprint(), domains)
-
-	return stepper.StepResult{
-		Status:  stepper.FAILURE,
-		Message: msg,
-	}
+	msg := internal.GenerateFromFingerprintTemplate(internal.AccountProofTemplate, kp.PubKey.Fingerprint(), domains)
+	return s.Failure(msg)
 }
 
-func generateFromTemplate(messageTemplate string, fingerprint string, domains []string) string {
-	type tplData struct {
-		Fingerprint string
-		Domains     []string
-	}
-
-	data := tplData{
-		Fingerprint: fingerprint,
-		Domains:     domains,
-	}
-
-	msg := fmt.Sprintf("%v", data) // when things fail
-	tmpl, err := template.New("template").Parse(messageTemplate)
+func checkLinkedAddressInResolver(s *stepper.Stepper) stepper.StepResult {
+	redirAddr, err := address.NewAddress(getAccountContext(*s).Args.RedirAddrStr)
 	if err != nil {
-		return msg
+		return s.Failure("it seems that the redirect address is not a valid")
 	}
 
-	var buf bytes.Buffer
-	err = tmpl.Execute(&buf, data)
+	ks := container.Instance.GetResolveService()
+	_, err = ks.ResolveAddress(redirAddr.Hash())
 	if err != nil {
-		return msg
+		return s.Failure("redirect address not found in resolver")
 	}
 
-	return buf.String()
+	// Store address into context
+	sc := getAccountContext(*s)
+	sc.RedirAddr = redirAddr
+	sc.AddrObj.RedirHash = redirAddr.Hash().String()
+
+	return s.Success("address is found")
 }
 
 func checkAddressInResolver(s *stepper.Stepper) stepper.StepResult {
-	addr := s.Ctx.Value(ctxAddr).(*address.Address)
-
 	ks := container.Instance.GetResolveService()
-	_, err := ks.ResolveAddress(addr.Hash())
+	_, err := ks.ResolveAddress(getAccountContext(*s).Addr.Hash())
 
 	if err == nil {
-		return stepper.StepResult{
-			Status:  stepper.FAILURE,
-			Message: "address already found",
-		}
+		return s.Failure("address already found")
 	}
 
-	return stepper.StepResult{
-		Status: stepper.SUCCESS,
-	}
+	return s.Success("")
 }
 
 func checkToken(s *stepper.Stepper) stepper.StepResult {
-	tokenStr := s.Ctx.Value(ctxTokenStr).(string)
-	addr := s.Ctx.Value(ctxAddr).(*address.Address)
+	addr := getAccountContext(*s).Addr
 
-	token, err := signature.ParseInviteToken(tokenStr)
+	invitationToken, err := signature.ParseInviteToken(getAccountContext(*s).Args.TokenStr)
 	if err != nil {
-		return stepper.StepResult{
-			Status:  stepper.FAILURE,
-			Message: "it seems that this token is invalid",
-		}
+		return s.Failure("it seems that this token is invalid")
 	}
 
 	// Check address matches the one in the token
-	if token.AddrHash.String() != addr.Hash().String() {
-		return stepper.StepResult{
-			Status:  stepper.FAILURE,
-			Message: fmt.Sprintf("this token is not for %s", addr.String()),
-		}
+	if invitationToken.AddrHash.String() != addr.Hash().String() {
+		return s.Failure(fmt.Sprintf("this token is not for %s", addr.String()))
 	}
 
-	s.Ctx = context.WithValue(s.Ctx, ctxToken, token)
+	sc := getAccountContext(*s)
+	sc.Token = invitationToken
+	sc.AddrObj.RoutingID = invitationToken.RoutingID
 
-	return stepper.StepResult{
-		Status: stepper.SUCCESS,
-	}
+	return s.Success("")
 }
 
 func checkAccountInVault(s *stepper.Stepper) stepper.StepResult {
-	v := s.Ctx.Value(ctxVault).(*vault.Vault)
-	addr := s.Ctx.Value(ctxAddr).(*address.Address)
+	v := getAccountContext(*s).Args.Vault
+	addr := getAccountContext(*s).Addr
 
 	if !v.HasAccount(*addr) {
-		return stepper.StepResult{
-			Status:  stepper.SUCCESS,
-			Message: "not found. That's good.",
-		}
+		return s.Success("not yet found. That's good.")
 	}
 
 	info, err := v.GetAccountInfo(*addr)
 	if err != nil {
-		return stepper.StepResult{
-			Status:  stepper.FAILURE,
-			Message: "found. But error while fetching from the vault.",
-		}
+		return s.Failure("found. But error while fetching from the vault.")
 	}
 
-	s.Ctx = context.WithValue(s.Ctx, ctxInfo, info)
-	s.Ctx = context.WithValue(s.Ctx, ctxAccountFound, true)
+	// Update all information with the found settings from the vault
+	sc := getAccountContext(*s)
+	sc.AccountInfo = info
+	sc.Proof = info.Pow
+	sc.RedirAddr = info.RedirAddress
+	kp := info.GetActiveKey().KeyPair
+	sc.KeyPair = &kp
+	sc.Addr = info.Address
 
-	return stepper.StepResult{
-		Status:  stepper.SUCCESS,
-		Message: "found. That's odd, but let's continue...",
+	sc.AddrObj.Hash = info.Address.Hash().String()
+	sc.AddrObj.PublicKey = info.GetActiveKey().PubKey
+	sc.AddrObj.RoutingID = info.RoutingID
+	sc.AddrObj.Pow = info.Pow.String()
+
+	if info.RedirAddress != nil {
+		sc.AddrObj.RedirHash = info.RedirAddress.Hash().String()
 	}
+
+	return s.Success("found.")
 }
 
 func generateKeyPair(s *stepper.Stepper) stepper.StepResult {
-	kt := s.Ctx.Value(ctxKeyType).(bmcrypto.KeyType)
+	kt := getAccountContext(*s).Args.KeyType
+
 	kp, err := bmcrypto.GenerateKeypairWithRandomSeed(kt)
 	if err != nil {
-		return stepper.StepResult{
-			Status:  stepper.FAILURE,
-			Message: err.Error(),
-		}
+		return s.Failure(err.Error())
 	}
 
-	s.Ctx = context.WithValue(s.Ctx, ctxKeyPair, kp)
-	return stepper.StepResult{
-		Status: stepper.SUCCESS,
-	}
+	sc := getAccountContext(*s)
+	sc.KeyPair = kp
+	sc.AddrObj.PublicKey = kp.PubKey
+
+	return s.Success("")
 }
 
 func doProofOfWork(s *stepper.Stepper) stepper.StepResult {
-	addr := s.Ctx.Value(ctxAddr).(*address.Address)
+	addr := getAccountContext(*s).Addr
 
 	// Find the number of bits for address creation
 	res := container.Instance.GetResolveService()
@@ -378,24 +338,30 @@ func doProofOfWork(s *stepper.Stepper) stepper.StepResult {
 	proof := pow.NewWithoutProof(resolverCfg.ProofOfWork.Address, addr.Hash().String())
 	proof.WorkMulticore()
 
-	s.Ctx = context.WithValue(s.Ctx, ctxProof, proof)
+	sc := getAccountContext(*s)
+	sc.Proof = proof
+	sc.AddrObj.Pow = proof.String()
 
-	return stepper.StepResult{
-		Status: stepper.SUCCESS,
-	}
+	return s.Success("")
 }
 
 func addAccountToVault(s *stepper.Stepper) stepper.StepResult {
-	v := s.Ctx.Value(ctxVault).(*vault.Vault)
-	addr := s.Ctx.Value(ctxAddr).(*address.Address)
-	name := s.Ctx.Value(ctxName).(string)
-	kp := s.Ctx.Value(ctxKeyPair).(*bmcrypto.KeyPair)
-	proof := s.Ctx.Value(ctxProof).(*pow.ProofOfWork)
-	token := s.Ctx.Value(ctxToken).(*signature.Token)
+	v := getAccountContext(*s).Args.Vault
+	addr := getAccountContext(*s).Addr
+	name := getAccountContext(*s).Args.Name
+	kp := getAccountContext(*s).KeyPair
+	proof := getAccountContext(*s).Proof
+	redirAddr := getAccountContext(*s).RedirAddr
+
+	routingID := ""
+	if getAccountContext(*s).Token != nil {
+		routingID = getAccountContext(*s).Token.RoutingID
+	}
 
 	info := &vault.AccountInfo{
-		Address: addr,
-		Name:    name,
+		Address:      addr,
+		RedirAddress: redirAddr,
+		Name:         name,
 		Keys: []vault.KeyPair{
 			{
 				KeyPair: *kp,
@@ -403,94 +369,62 @@ func addAccountToVault(s *stepper.Stepper) stepper.StepResult {
 			},
 		},
 		Pow:       proof,
-		RoutingID: token.RoutingID,
+		RoutingID: routingID,
 	}
 
 	v.AddAccount(*info)
 
 	err := v.Persist()
 	if err != nil {
-		return stepper.StepResult{
-			Status:  stepper.FAILURE,
-			Message: fmt.Sprintf("error while saving account into vault: %#v", err),
-		}
+		return s.Failure(fmt.Sprintf("error while saving account into vault: %#v", err))
 	}
 
-	s.Ctx = context.WithValue(s.Ctx, ctxInfo, info)
-	s.Ctx = context.WithValue(s.Ctx, ctxAccountFound, true)
-
-	return stepper.StepResult{
-		Status: stepper.SUCCESS,
-	}
+	return s.Success("")
 }
 
 func uploadAccountToServer(s *stepper.Stepper) stepper.StepResult {
-	token := s.Ctx.Value(ctxToken).(*signature.Token)
-	info := s.Ctx.Value(ctxInfo).(*vault.AccountInfo)
-	tokenStr := s.Ctx.Value(ctxTokenStr).(string)
+	sc := getAccountContext(*s)
 
 	// Fetch routing info
 	ks := container.Instance.GetResolveService()
-	routingInfo, err := ks.ResolveRouting(token.RoutingID)
+	routingInfo, err := ks.ResolveRouting(sc.Token.RoutingID)
 	if err != nil {
-		return stepper.StepResult{
-			Status:  stepper.FAILURE,
-			Message: fmt.Sprintf("cannot find route ID inside the resolver: %#v", err),
-		}
+		return s.Failure(fmt.Sprintf("cannot find route ID inside the resolver: %#v", err))
 	}
 
-	client, err := api.NewAuthenticated(*info.Address, info.GetActiveKey().PrivKey, routingInfo.Routing, internal.JwtErrorFunc)
+	client, err := api.NewAuthenticated(*sc.Addr, sc.KeyPair.PrivKey, routingInfo.Routing, internal.JwtErrorFunc)
 	if err != nil {
-		return stepper.StepResult{
-			Status:  stepper.FAILURE,
-			Message: "error while authenticating to the API",
-		}
+		return s.Failure("error while authenticating to the API")
 	}
 
-	err = client.CreateAccount(*info, tokenStr)
+	err = client.CreateAccount(*sc.AccountInfo, sc.Args.TokenStr)
 	if err != nil {
 		if err.Error() == "account already exists" {
-			return stepper.StepResult{
-				Status:  stepper.NOTICE,
-				Message: "account already exists on the server.",
-			}
+			return s.Notice("account already exists on the server.")
 		}
 
 		// Other error
-		return stepper.StepResult{
-			Status:  stepper.FAILURE,
-			Message: fmt.Sprintf("error while uploading the account: " + err.Error()),
-		}
+		return s.Failure(fmt.Sprintf("error while uploading the account: " + err.Error()))
 	}
 
-	return stepper.StepResult{
-		Status: stepper.SUCCESS,
-	}
+	return s.Success("")
 }
 
 func uploadAccountToResolver(s *stepper.Stepper) stepper.StepResult {
-	addr := s.Ctx.Value(ctxAddr).(*address.Address)
-	info := s.Ctx.Value(ctxInfo).(*vault.AccountInfo)
-	tokenStr := s.Ctx.Value(ctxTokenStr).(string)
+	sc := getAccountContext(*s)
 
-	if !addr.HasOrganisationPart() {
-		tokenStr = ""
-	}
+	pk := sc.KeyPair.PrivKey
 
 	ks := container.Instance.GetResolveService()
-	err := ks.UploadAddressInfo(*info, tokenStr)
+	err := ks.UploadAddressInfo(*sc.Addr, sc.AddrObj, &pk)
 	if err != nil {
-		return stepper.StepResult{
-			Status:  stepper.FAILURE,
-			Message: fmt.Sprintf("error while uploading account to the resolver: %s", err.Error()),
-		}
+		return s.Failure(fmt.Sprintf("error while uploading account to the resolver: %s", err.Error()))
 	}
 
-	return stepper.StepResult{
-		Status: stepper.SUCCESS,
-	}
+	return s.Success("")
 }
 
-func accountNotFoundInContext(s stepper.Stepper) bool {
-	return s.Ctx.Value(ctxAccountFound) != nil
+// getAccountContext returns the spinner context structure with all information that is communicated between spinner steps
+func getAccountContext(s stepper.Stepper) *spinnerContext {
+	return s.Ctx.Value(internal.CtxSpinnerContext).(*spinnerContext)
 }

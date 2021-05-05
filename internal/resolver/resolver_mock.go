@@ -41,6 +41,7 @@ func NewMockRepository() (Repository, error) {
 	r.deletedAddress = make(map[string]AddressInfo)
 	r.routing = make(map[string]RoutingInfo)
 	r.organisation = make(map[string]OrganisationInfo)
+
 	return r, nil
 
 }
@@ -69,7 +70,7 @@ func (r *mockRepo) ResolveOrganisation(orgHash hash.Hash) (*OrganisationInfo, er
 	return nil, ErrKeyNotFound
 }
 
-func (r *mockRepo) UploadAddress(addr address.Address, info *AddressInfo, _ bmcrypto.PrivKey, _ proofofwork.ProofOfWork, orgToken string) error {
+func (r *mockRepo) UploadAddress(_ address.Address, info *AddressInfo, _ bmcrypto.PrivKey) error {
 	r.address[info.Hash] = *info
 	return nil
 }

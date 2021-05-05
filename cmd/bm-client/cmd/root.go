@@ -47,6 +47,10 @@ var rootCmd = &cobra.Command{
 		if _, exist := cmd.Annotations["dont_load_config"]; !exist {
 			config.LoadClientConfig(internal.Opts.Config)
 
+			if internal.Opts.Debug {
+				config.Client.Server.DebugHTTP = true
+			}
+
 			// Set vault path if not already set
 			if vault.VaultPath == "" {
 				vault.VaultPath = config.Client.Vault.Path
@@ -65,7 +69,10 @@ func Execute() {
 }
 
 func init() {
+	// These are not used directly, but are here for --help purposes only. These flags are actually located inside the
+	// internal.opts structure
 	rootCmd.PersistentFlags().StringP("config", "c", "", "configuration file")
 	rootCmd.PersistentFlags().StringP("password", "p", "", "password to unlock your account vault")
 	rootCmd.PersistentFlags().StringP("vault", "", "", "custom vault file")
+	rootCmd.PersistentFlags().Bool("debug", false, "debug HTTP traffic")
 }

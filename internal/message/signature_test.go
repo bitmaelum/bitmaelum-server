@@ -258,7 +258,7 @@ func setupClient() *bmcrypto.PrivKey {
 		Pow:         pow.String(),
 		Hash:        "000000000000000000000000000097026f0daeaec1aeb8351b096637679cf350",
 	}
-	_ = repo.UploadAddress(*addr, &ai, *privKey, *pow, "")
+	_ = repo.UploadAddress(*addr, &ai, *privKey)
 
 	// Note: our sender uses key3
 	privKey, pubKey, err = testing2.ReadTestKey("../../testdata/key-ed25519-3.json")
@@ -286,7 +286,7 @@ func setupClient() *bmcrypto.PrivKey {
 		Hash:        "000000000000000000018f66a0f3591a883f2b9cc3e95a497e7cf9da1071b4cc",
 		Pow:         pow.String(),
 	}
-	_ = repo.UploadAddress(*addr, &ai, *privKey, *pow, "")
+	_ = repo.UploadAddress(*addr, &ai, *privKey)
 
 	return privKey
 }
@@ -342,6 +342,5 @@ func uploadAddress(repo resolver.AddressRepository, addr address.Address, addrHa
 		Pow:         pow.String(),
 		RoutingInfo: resolver.RoutingInfo{},
 	}
-	_ = repo.UploadAddress(addr, &ai, *privKey, *pow, "")
-
+	_ = repo.UploadAddress(addr, &ai, *privKey)
 }

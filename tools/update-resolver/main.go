@@ -26,6 +26,7 @@ import (
 	"github.com/bitmaelum/bitmaelum-suite/internal"
 	"github.com/bitmaelum/bitmaelum-suite/internal/config"
 	"github.com/bitmaelum/bitmaelum-suite/internal/container"
+	"github.com/bitmaelum/bitmaelum-suite/internal/resolver"
 	"github.com/bitmaelum/bitmaelum-suite/internal/vault"
 	"github.com/bitmaelum/bitmaelum-suite/pkg/address"
 	"github.com/bitmaelum/bitmaelum-suite/pkg/hash"
@@ -65,8 +66,18 @@ func main() {
 			os.Exit(1)
 		}
 
+		addrObj := &resolver.AddressInfo{
+			Hash:      info.Address.Hash().String(),
+			PublicKey: info.GetActiveKey().PubKey,
+			RoutingID: info.RoutingID,
+			RedirHash: info.RedirAddress.Hash().String(),
+			Pow:       info.Pow.String(),
+		}
+
+		pk := info.GetActiveKey().PrivKey
+
 		rs := container.Instance.GetResolveService()
-		err = rs.UploadAddressInfo(*info, "")
+		err = rs.UploadAddressInfo(*info.Address, *addrObj, &pk)
 		if err != nil {
 			fmt.Printf("Error for account %s: %s\n", info.Address, err)
 		}

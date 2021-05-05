@@ -94,29 +94,3 @@ func TestAPI_GetAPIKey_Correct(t *testing.T) {
 	assert.Equal(t, apiKey.Admin, false)
 	assert.Equal(t, apiKey.Desc, "description")
 }
-
-// // GetAPIKey gets a single key
-// func (api *API) GetAPIKey(addrHash hash.Hash, ID string) (*key.APIKeyType, error) {
-// 	url := fmt.Sprintf("/account/%s/apikey/%s", addrHash.String(), ID)
-// 	body, statusCode, err := api.Get(url)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-//
-// 	if statusCode < 200 || statusCode > 299 {
-// 		return nil, errNoSuccess
-// 	}
-//
-// 	if isErrorResponse(body) {
-// 		return nil, GetErrorFromResponse(body)
-// 	}
-//
-// 	// Parse body for key
-// 	k := &key.APIKeyType{}
-// 	err = json.Unmarshal(body, &k)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-//
-// 	return k, nil
-// }

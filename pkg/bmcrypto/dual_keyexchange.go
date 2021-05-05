@@ -27,6 +27,7 @@ import (
 	"errors"
 	"io"
 
+	"github.com/jorrizza/ed2curve25519"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/sha3"
 )
@@ -86,8 +87,8 @@ func DualKeyGetSecret(priv PrivKey, txID TransactionID) ([]byte, bool, error) {
 
 	// Step 1-3: D' = aR
 	Dprime, err := curve25519.X25519(
-		EdPrivToX25519(priv.K.(ed25519.PrivateKey).Seed()),
-		EdPubToX25519(txID.R),
+		ed2curve25519.Ed25519PrivateKeyToCurve25519(priv.K.(ed25519.PrivateKey).Seed()),
+		ed2curve25519.Ed25519PublicKeyToCurve25519(txID.R),
 	)
 	if err != nil {
 		return nil, false, err

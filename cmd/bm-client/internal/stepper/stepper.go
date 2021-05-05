@@ -38,14 +38,14 @@ type StepResult struct {
 type Step struct {
 	Title          string                      // Title of the step
 	DisplaySpinner bool                        // Should we display a spinner on this step
-	OnlyIfFunc     func(s Stepper) bool        // Called to check if the step needs to run or not
+	SkipIfFunc     func(s Stepper) bool        // Called to check if the step needs to be skipped
 	RunFunc        func(s *Stepper) StepResult // Run function for this step
 	CleanupFunc    func(s Stepper)             // Function to run for cleaning up after a failure
 
 	Result *StepResult // The result of the step when finished
 }
 
-// Status contants
+// Status constants
 const (
 	STOPPED = iota // Stepper is not running
 	RUNNING        // Stepper is running
@@ -53,6 +53,7 @@ const (
 	SUCCESS        // Stepper or step has succeeded
 	SKIPPED        // Step is skipped
 	NOTICE         // Step throws a notification
+	WARNING        // Step throws a warning
 )
 
 // Ansi constants
@@ -100,8 +101,8 @@ func (s *Stepper) Run() {
 		s.StepIdx = idx
 
 		// Check if we need to do the step, or if we can skip it directly
-		if step.OnlyIfFunc != nil && step.OnlyIfFunc(*s) {
-			s.Skip(step.Title)
+		if step.SkipIfFunc != nil && step.SkipIfFunc(*s) {
+			s.printSkip(step.Title)
 			continue
 		}
 
@@ -149,13 +150,15 @@ func (s *Stepper) runStep(step Step) StepResult {
 	}
 	switch result.Status {
 	case SUCCESS:
-		s.Success(step.Title + msg)
+		s.printSuccess(step.Title + msg)
 	case FAILURE:
-		s.Failure(step.Title + msg)
+		s.printFailure(step.Title + msg)
 	case NOTICE:
-		s.Notice(step.Title + msg)
+		s.printNotice(step.Title + msg)
+	case WARNING:
+		s.printWarning(step.Title + msg)
 	case SKIPPED:
-		s.Skip(step.Title + msg)
+		s.printSkip(step.Title + msg)
 	}
 
 	return result
@@ -170,27 +173,51 @@ func (s *Stepper) cleanup() {
 	}
 }
 
-// Success will print a success message
-func (s *Stepper) Success(msg string) {
+// printSuccess will print a success message
+func (s *Stepper) printSuccess(msg string) {
 	fmt.Printf("%s[%s%sSUCCESS%s] %s    \n", AnsiCr, AnsiClrEol, AnsiFgGreen, AnsiReset, msg)
 }
 
-// Failure will print a failure message
-func (s *Stepper) Failure(msg string) {
+// printFailure will print a failure message
+func (s *Stepper) printFailure(msg string) {
 	fmt.Printf("%s[%s%sFAILURE%s] %s    \n", AnsiCr, AnsiClrEol, AnsiFgRed, AnsiReset, msg)
 }
 
-// Warning will print a warning message
-func (s *Stepper) Warning(msg string) {
+// printWarning will print a warning message
+func (s *Stepper) printWarning(msg string) {
 	fmt.Printf("%s[%s%sWARNING%s] %s    \n", AnsiCr, AnsiClrEol, AnsiFgYellow, AnsiReset, msg)
 }
 
-// Notice will print a notice message
-func (s *Stepper) Notice(msg string) {
+// printNotice will print a notice message
+func (s *Stepper) printNotice(msg string) {
 	fmt.Printf("%s[%s%sNOTICE %s] %s    \n", AnsiCr, AnsiClrEol, AnsiFgBlue, AnsiReset, msg)
 }
 
-// Skip will print a skipped message
-func (s *Stepper) Skip(msg string) {
+// printSkip will print a skipped message
+func (s *Stepper) printSkip(msg string) {
 	fmt.Printf("%s[%s%sSKIPPED%s] %s    \n", AnsiCr, AnsiClrEol, AnsiFgCyan, AnsiReset, msg)
+}
+
+// Failure ill return a failure step result
+func (s *Stepper) Failure(msg string) StepResult {
+	return StepResult{
+		Status:  FAILURE,
+		Message: msg,
+	}
+}
+
+// Notice will return a notice step result
+func (s *Stepper) Notice(msg string) StepResult {
+	return StepResult{
+		Status:  NOTICE,
+		Message: msg,
+	}
+}
+
+// Success will return a success step result
+func (s *Stepper) Success(msg string) StepResult {
+	return StepResult{
+		Status:  SUCCESS,
+		Message: msg,
+	}
 }

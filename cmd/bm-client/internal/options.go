@@ -24,6 +24,7 @@ type options struct {
 	Password string `short:"p" long:"password" description:"Vault password" default:""`
 	Vault    string `long:"vault" description:"Custom vault file" default:""`
 	Version  bool   `short:"v" long:"version" description:"Display version information"`
+	Debug    bool   `long:"debug" description:"Display HTTP traffic"`
 }
 
 // Opts are the options set through the command line

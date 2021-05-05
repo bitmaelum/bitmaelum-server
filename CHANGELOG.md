@@ -3,6 +3,7 @@
 - Default opening notepad on windows when editting config or messages
 - Service support: Now you can install both bm-bridge and bm-server as system services using bm-config
 - bm-client: accounts can be activated and deactivated on the key resolver. Deactivated accounts will be removed after a while (not yet defined)
+- bm-client: Reserved certain accounts and organisations for registration (see https://github.com/bitmaelum/bitmaelum-suite/wiki/reserved-addresses)
 - bm-client: OTP generation works properly
 
 # Security
@@ -15,6 +16,8 @@
 - bm-bridge: Support for mail relay (aka gateway mode) for organizations, this way an organization can "host" using the BitMaelum protocol.
 - bm-client: reserved certain accounts and organisations for registration (see https://github.com/bitmaelum/bitmaelum-suite/wiki/reserved-addresses)
 - resolver configuration has been overhauled 
+- bm-client: Added `--debug` flag to display HTTP traffic (override the client config's server.debughttp option) 
+
 
 
 ## 0.1.1-1 (2021-feb-19)

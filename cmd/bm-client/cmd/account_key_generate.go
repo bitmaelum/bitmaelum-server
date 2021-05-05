@@ -25,6 +25,7 @@ import (
 
 	"github.com/bitmaelum/bitmaelum-suite/cmd/bm-client/internal/container"
 	"github.com/bitmaelum/bitmaelum-suite/internal"
+	"github.com/bitmaelum/bitmaelum-suite/internal/resolver"
 	"github.com/bitmaelum/bitmaelum-suite/internal/vault"
 	"github.com/bitmaelum/bitmaelum-suite/pkg/bmcrypto"
 	"github.com/sirupsen/logrus"
@@ -89,8 +90,18 @@ WITHOUT THESE WORDS, ALL ACCESS TO YOUR ACCOUNT IS LOST!
 		if *advertise {
 			info.SetActiveKey(kp)
 
+			addrObj := &resolver.AddressInfo{
+				Hash:      info.Address.Hash().String(),
+				PublicKey: info.GetActiveKey().PubKey,
+				RoutingID: info.RoutingID,
+				RedirHash: info.RedirAddress.Hash().String(),
+				Pow:       info.Pow.String(),
+			}
+
+			pk := info.GetActiveKey().PrivKey
+
 			ks := container.Instance.GetResolveService()
-			err = ks.UploadAddressInfo(*info, "")
+			err = ks.UploadAddressInfo(*info.Address, *addrObj, &pk)
 		}
 
 		// Error or we didn't advertise

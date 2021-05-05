@@ -52,7 +52,7 @@ func testRepoAddress(t *testing.T, repo AddressRepository) {
 		},
 	}
 
-	err = repo.UploadAddress(*a, &ai, *privKey, *pow, "")
+	err = repo.UploadAddress(*a, &ai, *privKey)
 	assert.NoError(t, err)
 
 	addr, err = repo.ResolveAddress(a.Hash())

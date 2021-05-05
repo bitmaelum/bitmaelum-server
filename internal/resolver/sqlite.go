@@ -165,7 +165,7 @@ func (r *sqliteRepo) ResolveOrganisation(orgHash hash.Hash) (*OrganisationInfo, 
 	}, nil
 }
 
-func (r *sqliteRepo) UploadAddress(_ address.Address, info *AddressInfo, _ bmcrypto.PrivKey, _ proofofwork.ProofOfWork, _ string) error {
+func (r *sqliteRepo) UploadAddress(_ address.Address, info *AddressInfo, _ bmcrypto.PrivKey) error {
 	query := fmt.Sprintf("INSERT INTO %s(hash, pubkey , routing_id, deleted) VALUES (?, ?, ?, 0)", addressTableName)
 	st, err := r.conn.Prepare(query)
 	if err != nil {

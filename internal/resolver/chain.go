@@ -87,9 +87,9 @@ func (r *ChainRepository) ResolveOrganisation(orgHash hash.Hash) (*OrganisationI
 }
 
 // UploadAddress public key through the chained repos
-func (r *ChainRepository) UploadAddress(addr address.Address, info *AddressInfo, privKey bmcrypto.PrivKey, pow proofofwork.ProofOfWork, orgToken string) error {
+func (r *ChainRepository) UploadAddress(addr address.Address, info *AddressInfo, privKey bmcrypto.PrivKey) error {
 	for idx := range r.repos {
-		err := r.repos[idx].UploadAddress(addr, info, privKey, pow, orgToken)
+		err := r.repos[idx].UploadAddress(addr, info, privKey)
 		if err != nil {
 			return err
 		}

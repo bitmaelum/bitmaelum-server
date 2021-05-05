@@ -36,11 +36,15 @@ This assumes you have a BitMaelum invitation token for the specific server.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		v := vault.OpenDefaultVault()
 
+		if *token == "" && *target == "" {
+			logrus.Fatal("please specify either --token or --target")
+		}
+
 		kt, err := bmcrypto.FindKeyType(*keytype)
 		if err != nil {
 			logrus.Fatal("incorrect key type")
 		}
-		handlers.CreateAccount(v, *account, *name, *token, kt)
+		handlers.CreateAccount(v, *account, *name, *token, kt, *target)
 	},
 }
 
@@ -49,6 +53,7 @@ var (
 	name    *string
 	token   *string
 	keytype *string
+	target  *string
 )
 
 func init() {
@@ -57,9 +62,9 @@ func init() {
 	account = createAccountCmd.Flags().String("account", "", "Account to create")
 	name = createAccountCmd.Flags().String("name", "", "Your full name")
 	token = createAccountCmd.Flags().String("token", "", "Invitation token from server")
+	target = createAccountCmd.Flags().String("target", "", "Target address to link to")
 	keytype = createAccountCmd.Flags().String("keytype", "ed25519", "Type of key you want to generate (defaults to ed25519)")
 
 	_ = createAccountCmd.MarkFlagRequired("account")
 	_ = createAccountCmd.MarkFlagRequired("name")
-	_ = createAccountCmd.MarkFlagRequired("token")
 }

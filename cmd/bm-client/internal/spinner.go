@@ -24,6 +24,13 @@ import (
 	"time"
 )
 
+type ctxKey int
+
+const (
+	// CtxSpinnerContext is a context key
+	CtxSpinnerContext ctxKey = iota
+)
+
 // Spinner is a structure that will display a nice spinning char to inform that the system is busy with something
 type Spinner struct {
 	d       time.Duration
